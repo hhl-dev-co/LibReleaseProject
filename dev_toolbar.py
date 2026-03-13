@@ -1,338 +1,360 @@
-import sys
+import customtkinter as ctk
+import subprocess
+import os
+import json
 import tkinter as tk
-from tkinter import messagebox
-
-# 1. 실행 중 발생하는 모든 에러를 팝업창으로 잡아내기 위한 설정
-def show_fatal_error(e):
-    root = tk.Tk()
-    root.withdraw()
-    messagebox.showerror("실행 오류 발생", f"프로그램 실행 중 오류가 발생했습니다:\n\n{str(e)}")
-    root.destroy()
+from tkinter import filedialog, messagebox, Menu
+import pystray
+from pystray import MenuItem as item
+from PIL import Image, ImageDraw
+import threading
+import tempfile
+import pygetwindow as gw
+import psutil
+import win32process
+from screeninfo import get_monitors
 
 try:
-    import customtkinter as ctk
-    import subprocess
-    import os
-    import json
-    from tkinter import filedialog, Menu
-    import pystray
-    from pystray import MenuItem as item
-    from PIL import Image, ImageDraw
-    import threading
-    import tempfile
-    import pygetwindow as gw
-    import psutil
-    import win32process
-    from screeninfo import get_monitors
+    from icoextract import IconExtractor
+except ImportError:
+    IconExtractor = None
 
-    try:
-        from icoextract import IconExtractor
-    except ImportError:
-        IconExtractor = None
+CONFIG_FILE = "launcher_config.json"
+HELP_FILE = "help_data.json"
+BAT_FILENAME = "bc4_build_cmd.bat"
 
-    CONFIG_FILE = "launcher_config.json"
-    BAT_FILENAME = "bc4_build_cmd.bat"
+# ToolTip 클래스는 동일하게 유지
+class ToolTip:
+    def __init__(self, widget):
+        self.widget = widget
+        self.text = ""
+        self.tooltip_window = None
+        self.widget.bind("<Enter>", self.show_tooltip, add="+")
+        self.widget.bind("<Leave>", self.hide_tooltip, add="+")
 
-    # --- ToolTip 클래스 ---
-    class ToolTip:
-        def __init__(self, widget):
-            self.widget = widget
-            self.text = ""
+    def show_tooltip(self, event=None):
+        if self.tooltip_window or not self.text: return
+        x = self.widget.winfo_rootx() + (self.widget.winfo_width() // 2) - 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True)
+        self.tooltip_window.attributes("-topmost", True)
+        self.tooltip_window.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(self.tooltip_window, text=self.text, background="#2C3E50", foreground="white", 
+                         relief="solid", borderwidth=1, font=("Segoe UI", 11))
+        label.pack(ipadx=5, ipady=2)
+
+    def hide_tooltip(self, event=None):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
             self.tooltip_window = None
-            self.widget.bind("<Enter>", self.show_tooltip, add="+")
-            self.widget.bind("<Leave>", self.hide_tooltip, add="+")
 
-        def show_tooltip(self, event=None):
-            if self.tooltip_window or not self.text: return
-            try:
-                x = self.widget.winfo_rootx() + (self.widget.winfo_width() // 2) - 20
-                y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
-                self.tooltip_window = tk.Toplevel(self.widget)
-                self.tooltip_window.wm_overrideredirect(True)
-                self.tooltip_window.attributes("-topmost", True)
-                self.tooltip_window.wm_geometry(f"+{x}+{y}")
-                label = tk.Label(self.tooltip_window, text=self.text, background="#2C3E50", foreground="white", 
-                                relief="solid", borderwidth=1, font=("Segoe UI", 11))
-                label.pack(ipadx=5, ipady=2)
-            except: pass
+class MiniLauncher(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.cached_monitors = get_monitors()
+        
+        self.load_config()
+        self.validate_position()
+        
+        self.title("Dev_Toolbar")
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.wm_attributes("-transparentcolor", "grey")
+        self.configure(fg_color="grey")
+        
+        self.update_idletasks()
+        self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}")
 
-        def hide_tooltip(self, event=None):
-            if self.tooltip_window:
-                self.tooltip_window.destroy()
-                self.tooltip_window = None
+        self.context_menu = Menu(self, tearoff=0, bg="#2C3E50", fg="white", activebackground="#34495E")
+        self.main_frame = ctk.CTkFrame(self, fg_color="#1E272E", corner_radius=6)
+        self.main_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
-    class MiniLauncher(ctk.CTk):
-        def __init__(self):
-            super().__init__()
-            
-            # 초기화 전 기본값 강제 설정
-            self.bat_folder = ""
-            self.custom_apps = []
-            self.orientation = "vertical"
-            self.last_x = 100
-            self.last_y = 100
-            self.custom_buttons = []
-            self.custom_images = []
+        # 위젯 생성
+        self.drag_handle = ctk.CTkLabel(self.main_frame, text=" ⣿ ", text_color="#7F8C8D", cursor="fleur", font=("Arial", 18))
+        self.folder_label = ctk.CTkLabel(self.main_frame, text="경로 없음", text_color="#F1C40F", font=("Segoe UI", 12, "bold"), cursor="hand2")
 
-            self.load_config()
-            self.validate_position()
-            
-            self.title("Dev_Toolbar")
-            self.overrideredirect(True)
-            self.attributes("-topmost", True)
-            self.wm_attributes("-transparentcolor", "grey")
-            self.configure(fg_color="grey")
-            
-            # UI 레이아웃 생성
-            self.context_menu = Menu(self, tearoff=0, bg="#2C3E50", fg="white", activebackground="#34495E")
-            self.main_frame = ctk.CTkFrame(self, fg_color="#1E272E", corner_radius=6)
-            self.main_frame.pack(fill="both", expand=True, padx=1, pady=1)
+        self.btn_auto = self.add_raw_button("🚀\n\nAuto Build", self.run_build, "#2980B9", 75, 55)
+        self.btn_clean = self.add_raw_button("🧹\n\nClean Build", self.run_clean, "#8E44AD", 75, 55)
+        self.btn_log = self.add_raw_button("🗑\n\nLog", self.run_clear_logs, "#D35400", 75, 55)
+        
+        self.action_buttons = [{"widget": self.btn_auto, "color": "#2980B9"}, {"widget": self.btn_clean, "color": "#8E44AD"}, {"widget": self.btn_log, "color": "#D35400"}]
+        self.custom_buttons = []
+        self.custom_images = []
+        
+        ctrl_size = 40
+        self.btn_setting = self.add_raw_button("📁", self.force_set_path, "#7F8C8D", ctrl_size, ctrl_size, 12)
+        self.btn_minimize = self.add_raw_button("➖", self.minimize_to_tray, "#5DADE2", ctrl_size, ctrl_size, 12) 
+        self.btn_close = self.add_raw_button("❌", self.destroy_app, "#C0392B", ctrl_size, ctrl_size, 12)
 
-            # 위젯 생성
-            self.drag_handle = ctk.CTkLabel(self.main_frame, text=" ⣿ ", text_color="#7F8C8D", cursor="fleur", font=("Arial", 18))
-            self.folder_label = ctk.CTkLabel(self.main_frame, text="경로 없음", text_color="#F1C40F", font=("Segoe UI", 12, "bold"), cursor="hand2")
+        self.setup_bindings() 
+        self.update_folder_label()
+        self.update_button_states()
+        self.refresh_custom_buttons() 
+        
+        self._drag_timer = None
+        self._is_draggable = False
+        self.after(150, lambda: self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}"))
 
-            self.btn_auto = self.add_raw_button("🚀\n\nAuto Build", self.run_build, "#2980B9", 75, 55)
-            self.btn_clean = self.add_raw_button("🧹\n\nClean Build", self.run_clean, "#8E44AD", 75, 55)
-            self.btn_log = self.add_raw_button("🗑\n\nLog", self.run_clear_logs, "#D35400", 75, 55)
-            
-            self.action_buttons = [
-                {"widget": self.btn_auto, "color": "#2980B9"},
-                {"widget": self.btn_clean, "color": "#8E44AD"},
-                {"widget": self.btn_log, "color": "#D35400"}
-            ]
-            
-            ctrl_size = 40
-            self.btn_setting = self.add_raw_button("📁", self.force_set_path, "#7F8C8D", ctrl_size, ctrl_size, 12)
-            self.btn_minimize = self.add_raw_button("➖", self.minimize_to_tray, "#5DADE2", ctrl_size, ctrl_size, 12) 
-            self.btn_close = self.add_raw_button("❌", self.destroy_app, "#C0392B", ctrl_size, ctrl_size, 12)
+    def add_raw_button(self, text, command, color, width, height, font_size=11, image=None):
+        return ctk.CTkButton(self.main_frame, text=text, fg_color=color, corner_radius=8, 
+                             width=width, height=height, font=("Segoe UI", font_size, "bold"),
+                             command=command, image=image, cursor="hand2")
 
-            # 초기 업데이트
-            self.folder_tooltip = ToolTip(self.folder_label)
-            self.update_folder_label()
-            self.update_button_states()
-            self.refresh_custom_buttons()
-            
-            # 이벤트 바인딩
-            self.setup_event_bindings()
-            
-            # 위치 설정
-            self.update_idletasks()
-            self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}")
-            self.after(200, lambda: self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}"))
+    def setup_bindings(self):
+        for w in (self.main_frame, self.folder_label):
+            w.bind("<Button-1>", self.click_window)
+            w.bind("<B1-Motion>", self.drag_window)
+            w.bind("<ButtonRelease-1>", self.on_bg_release)
+            w.bind("<Button-3>", self.show_context_menu)
+            w.bind("<Button-1>", self.on_bg_click, add="+")
 
-        def add_raw_button(self, text, command, color, width, height, font_size=11, image=None):
-            return ctk.CTkButton(self.main_frame, text=text, fg_color=color, corner_radius=8, 
-                                width=width, height=height, font=("Segoe UI", font_size, "bold"),
-                                command=command, image=image, cursor="hand2")
+        self.drag_handle.bind("<Button-1>", self.click_handle)
+        self.drag_handle.bind("<B1-Motion>", self.drag_window)
+        self.drag_handle.bind("<ButtonRelease-1>", self.on_bg_release)
 
-        def setup_event_bindings(self):
-            self.drag_handle.bind("<Button-1>", self.click_window)
-            self.drag_handle.bind("<B1-Motion>", self.drag_window)
-            self.drag_handle.bind("<ButtonRelease-1>", self.on_bg_release)
-            self.main_frame.bind("<Button-3>", self.show_context_menu)
-            self.main_frame.bind("<Button-1>", self.on_bg_click)
-            self.folder_label.bind("<Button-1>", self.on_bg_click)
-            self.main_frame.bind("<B1-Motion>", self.drag_window)
-            self.folder_label.bind("<B1-Motion>", self.drag_window)
-            self.main_frame.bind("<ButtonRelease-1>", self.on_bg_release)
-            self.folder_label.bind("<ButtonRelease-1>", self.on_bg_release)
-            self.folder_label.bind("<Button-3>", self.show_context_menu)
+    # [기능 추가] 맨 앞으로 가져오기
+    def bring_to_front(self):
+        self.attributes("-topmost", True)
+        self.lift()
 
-        def load_config(self):
-            if os.path.exists(CONFIG_FILE):
-                try:
-                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        self.bat_folder = data.get("bat_folder", "")
-                        self.custom_apps = data.get("custom_apps", [])
-                        self.orientation = data.get("orientation", "vertical")
-                        self.last_x = data.get("last_x", 100)
-                        self.last_y = data.get("last_y", 100)
-                except: pass
+    # [기능 추가] 맨 뒤로 보내기
+    def send_to_back(self):
+        self.attributes("-topmost", False)
+        self.lower()
 
-        def save_config(self):
-            try:
-                data = {"bat_folder": self.bat_folder, "custom_apps": self.custom_apps,
-                        "orientation": self.orientation, "last_x": int(self.last_x), "last_y": int(self.last_y)}
-                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=4)
-            except: pass
+    def update_folder_label(self):
+        if self.bat_folder:
+            full_name = os.path.basename(os.path.normpath(self.bat_folder))
+            display_name = (full_name[:10] + "...") if len(full_name) > 10 else full_name
+            self.folder_label.configure(text=f"[{display_name}]", text_color="#ECF0F1")
+            ToolTip(self.folder_label).text = full_name
+        else:
+            self.folder_label.configure(text="경로 없음", text_color="#F1C40F")
+            ToolTip(self.folder_label).text = ""
 
-        def validate_position(self):
-            try:
-                monitors = get_monitors()
-                is_visible = any(m.x <= self.last_x <= (m.x + m.width - 50) and m.y <= self.last_y <= (m.y + m.height - 50) for m in monitors)
-                if not is_visible:
-                    self.last_x, self.last_y = 100, 100
-            except:
-                self.last_x, self.last_y = 100, 100
+    def show_context_menu(self, event):
+        self.context_menu.delete(0, "end")
+        
+        is_valid_path = bool(self.bat_folder and os.path.exists(os.path.join(self.bat_folder, BAT_FILENAME)))
+        menu_state = "normal" if is_valid_path else "disabled"
 
-        def toggle_orientation(self, keep_state=False):
-            if not keep_state:
-                self.orientation = "vertical" if self.orientation == "horizontal" else "horizontal"
-                self.save_config()
-            
-            for widget in self.main_frame.winfo_children():
-                widget.pack_forget()
+        self.context_menu.add_command(label="📁 폴더 바로 열기", command=lambda: os.startfile(self.bat_folder) if is_valid_path else None, state=menu_state)
+        self.context_menu.add_command(label="➕ 앱 추가", command=self.add_external_app)
+        self.context_menu.add_command(label="🎯 실행 중 앱 추가", command=self.show_running_apps_selector)
+        self.context_menu.add_command(label="⚙️ 앱 편집/삭제", command=self.manage_external_apps)
+        self.context_menu.add_separator()
+        
+        # [기능 추가] 창 순서 제어 메뉴
+        self.context_menu.add_command(label="🔼 맨 앞으로 가져오기", command=self.bring_to_front)
+        self.context_menu.add_command(label="🔽 맨 뒤로 보내기", command=self.send_to_back)
+        self.context_menu.add_separator()
+        
+        self.context_menu.add_command(label="🔄 가로/세로 전환", command=lambda: self.toggle_orientation(False))
+        self.context_menu.add_command(label="❓ 도움말", command=self.show_help_from_json)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="🧹 설정된 경로 Clear", command=self.clear_saved_path, state=menu_state)
+        self.context_menu.add_command(label="❌ 종료", command=self.destroy_app)
+        
+        self.context_menu.post(event.x_root, event.y_root)
 
-            if self.orientation == "horizontal":
-                self.drag_handle.pack(side="left", padx=(10, 0))
-                self.folder_label.pack(side="left", padx=(5, 10))
-                for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons:
-                    b.pack(side="left", padx=3, pady=8)
-                self.btn_close.pack(side="right", padx=(1, 5), pady=5)
-                self.btn_minimize.pack(side="right", padx=1, pady=5)
-                self.btn_setting.pack(side="right", padx=(5, 1), pady=5)
-            else:
-                self.drag_handle.pack(side="top", pady=(10, 0))
-                self.folder_label.pack(side="top", pady=(5, 10))
-                for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons:
-                    b.pack(side="top", padx=10, pady=3)
-                self.btn_close.pack(side="bottom", padx=5, pady=(1, 10))
-                self.btn_minimize.pack(side="bottom", padx=5, pady=1)
-                self.btn_setting.pack(side="bottom", padx=5, pady=(15, 1))
-            self.update_idletasks()
+    def manage_external_apps(self):
+        win = ctk.CTkToplevel(self)
+        win.title("앱 관리"); win.geometry("350x450"); win.attributes("-topmost", True)
+        
+        scroll = ctk.CTkScrollableFrame(win); scroll.pack(fill="both", expand=True, padx=10, pady=(10, 60))
+        
+        check_vars = []
+        for path in self.custom_apps:
+            var = tk.BooleanVar()
+            f = ctk.CTkFrame(scroll, fg_color="transparent"); f.pack(fill="x", pady=2)
+            cb = ctk.CTkCheckBox(f, text=os.path.basename(path), variable=var, font=("Segoe UI", 12))
+            cb.pack(side="left", padx=5)
+            check_vars.append((path, var))
 
-        def drag_window(self, event):
-            if event.widget != self.drag_handle and not getattr(self, '_is_draggable', False): return
+        def delete_selected():
+            to_remove = [p for p, v in check_vars if v.get()]
+            if not to_remove: return
+            if messagebox.askyesno("삭제 확인", f"선택한 {len(to_remove)}개의 앱을 삭제하시겠습니까?"):
+                for p in to_remove: self.custom_apps.remove(p)
+                self.save_config(); self.refresh_custom_buttons(); win.destroy()
+
+        btn_del = ctk.CTkButton(win, text="선택 삭제", fg_color="#C0392B", hover_color="#A93226", command=delete_selected)
+        btn_del.place(relx=0.5, rely=0.9, anchor="center")
+
+    def show_help_from_json(self):
+        help_win = ctk.CTkToplevel(self)
+        help_win.title("도움말"); help_win.geometry("400x350"); help_win.attributes("-topmost", True)
+        
+        title_label = ctk.CTkLabel(help_win, text="도움말", font=("Segoe UI", 16, "bold"))
+        title_label.pack(pady=10)
+
+        txt = ctk.CTkTextbox(help_win, font=("Consolas", 12), corner_radius=5)
+        txt.pack(fill="both", expand=True, padx=15, pady=15)
+
+        if os.path.exists(HELP_FILE):
+            with open(HELP_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                title_label.configure(text=data.get("title", "도움말"))
+                txt.insert("0.0", data.get("content", "내용이 없습니다."))
+        else:
+            txt.insert("0.0", "help_data.json 파일을 찾을 수 없습니다.\n기본 가이드를 확인하세요.")
+        
+        txt.configure(state="disabled")
+
+    def drag_window(self, event):
+        if getattr(self, '_is_draggable', False):
             self.attributes("-alpha", 0.7)
             mx, my = int(event.x_root), int(event.y_root)
             nx, ny = mx - self.offset_x, my - self.offset_y
-            snap = 30
-            ww, wh = self.winfo_width(), self.winfo_height()
-            try:
-                for m in get_monitors():
-                    if m.x <= mx <= m.x + m.width and m.y <= my <= m.y + m.height:
-                        if abs(nx - m.x) < snap: nx = m.x
-                        elif abs(nx + ww - (m.x + m.width)) < snap: nx = m.x + m.width - ww
-                        if abs(ny - m.y) < snap: ny = m.y
-                        elif abs(ny + wh - (m.y + m.height)) < snap: ny = m.y + m.height - wh
-                        break
-            except: pass
+            snap = 30; ww, wh = self.winfo_width(), self.winfo_height()
+            
+            for m in self.cached_monitors:
+                if m.x <= mx <= m.x + m.width and m.y <= my <= m.y + m.height:
+                    if abs(nx - m.x) < snap: nx = m.x
+                    elif abs(nx + ww - (m.x + m.width)) < snap: nx = m.x + m.width - ww
+                    if abs(ny - m.y) < snap: ny = m.y
+                    elif abs(ny + wh - (m.y + m.height)) < snap: ny = m.y + m.height - wh
+                    break
             self.geometry(f"+{int(nx)}+{int(ny)}")
 
-        def on_bg_release(self, event):
-            if hasattr(self, '_drag_timer') and self._drag_timer: self.after_cancel(self._drag_timer)
-            self.attributes("-alpha", 1.0)
-            self.update_idletasks()
-            self.last_x, self.last_y = self.winfo_x(), self.winfo_y()
-            self.save_config()
-            self._is_draggable = False
-            self.configure(cursor="arrow")
+    def on_bg_release(self, event):
+        if hasattr(self, '_drag_timer') and self._drag_timer: self.after_cancel(self._drag_timer)
+        self.attributes("-alpha", 1.0); self.update_idletasks()
+        self.last_x, self.last_y = self.winfo_x(), self.winfo_y()
+        self.save_config(); self._is_draggable = False; self.configure(cursor="arrow")
 
-        def click_window(self, event):
-            self.offset_x, self.offset_y = event.x_root - self.winfo_x(), event.y_root - self.winfo_y()
+    def click_window(self, event):
+        self.offset_x, self.offset_y = event.x_root - self.winfo_x(), event.y_root - self.winfo_y()
 
-        def on_bg_click(self, event):
-            self.click_window(event)
-            self._drag_timer = self.after(300, lambda: self.set_draggable(True))
+    def click_handle(self, event):
+        self.click_window(event)
+        self._is_draggable = True
+        self.configure(cursor="fleur")
 
-        def set_draggable(self, val):
-            self._is_draggable = val
-            if val: self.configure(cursor="fleur")
+    def on_bg_click(self, event):
+        self._is_draggable = False
+        self._drag_timer = self.after(300, lambda: setattr(self, '_is_draggable', True) or self.configure(cursor="fleur"))
 
-        def update_folder_label(self):
-            full_name = os.path.basename(os.path.normpath(self.bat_folder)) if self.bat_folder else "경로 없음"
-            display_name = full_name[:10] + "..." if len(full_name) > 10 else full_name
-            self.folder_label.configure(text=f"[{display_name}]" if self.bat_folder else display_name)
-            if hasattr(self, "folder_tooltip"): self.folder_tooltip.text = full_name
+    def load_config(self):
+        self.bat_folder = ""; self.custom_apps = []; self.orientation = "vertical"; self.last_x = self.last_y = 100
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.bat_folder = data.get("bat_folder", "")
+                    self.custom_apps = data.get("custom_apps", [])
+                    self.orientation = data.get("orientation", "vertical")
+                    self.last_x, self.last_y = data.get("last_x", 100), data.get("last_y", 100)
+            except: pass
 
-        def refresh_custom_buttons(self):
-            for b in self.custom_buttons: b.destroy()
-            self.custom_buttons.clear()
-            for p in self.custom_apps:
-                name = os.path.basename(p).replace(".exe", "")
-                btn = self.add_raw_button(f"🖥️\n{name[:5]}", lambda p=p: os.startfile(p), "#16A085", 55, 55)
-                self.custom_buttons.append(btn)
-            self.toggle_orientation(keep_state=True)
+    def save_config(self):
+        try:
+            data = {"bat_folder": self.bat_folder, "custom_apps": self.custom_apps, "orientation": self.orientation, "last_x": int(self.last_x), "last_y": int(self.last_y)}
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(data, f, indent=4)
+        except: pass
 
-        def show_context_menu(self, event):
-            self.context_menu.delete(0, "end")
-            has_path = bool(self.bat_folder)
-            self.context_menu.add_command(label="📁 폴더 바로 열기", command=lambda: os.startfile(self.bat_folder) if has_path else None, state="normal" if has_path else "disabled")
-            self.context_menu.add_command(label="➕ 앱 추가", command=self.add_external_app)
-            self.context_menu.add_command(label="🎯 실행 앱 추가", command=self.show_running_apps_selector)
-            self.context_menu.add_command(label="⚙️ 앱 편집/삭제", command=self.manage_external_apps)
-            self.context_menu.add_separator()
-            self.context_menu.add_command(label="🔄 가로/세로 전환", command=lambda: self.toggle_orientation(False))
-            self.context_menu.add_command(label="❓ 도움말", command=self.show_help_custom)
-            self.context_menu.add_separator()
-            self.context_menu.add_command(label="❌ 종료", command=self.destroy_app)
-            self.context_menu.post(event.x_root, event.y_root)
+    def validate_position(self):
+        try:
+            if not any(m.x <= self.last_x <= m.x + m.width - 50 and m.y <= self.last_y <= m.y + m.height - 50 for m in self.cached_monitors):
+                self.last_x = self.last_y = 100
+        except: pass
 
-        def add_external_app(self):
-            p = filedialog.askopenfilename(filetypes=[("Exe", "*.exe")])
-            if p: self.custom_apps.append(p); self.save_config(); self.refresh_custom_buttons()
+    def toggle_orientation(self, keep_state=False):
+        if not keep_state: self.orientation = "vertical" if self.orientation == "horizontal" else "horizontal"; self.save_config()
+        for w in self.main_frame.winfo_children(): w.pack_forget()
+        if self.orientation == "horizontal":
+            self.drag_handle.pack(side="left", padx=(10, 0))
+            self.folder_label.pack(side="left", padx=(5, 10))
+            for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons: b.pack(side="left", padx=3, pady=8)
+            self.btn_close.pack(side="right", padx=(1, 5)); self.btn_minimize.pack(side="right", padx=1); self.btn_setting.pack(side="right", padx=(5, 1))
+        else:
+            self.drag_handle.pack(side="top", pady=(10, 0))
+            self.folder_label.pack(side="top", pady=(5, 10))
+            for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons: b.pack(side="top", padx=10, pady=3)
+            self.btn_close.pack(side="bottom", padx=5, pady=(1, 10)); self.btn_minimize.pack(side="bottom", padx=5); self.btn_setting.pack(side="bottom", padx=5, pady=(15, 1))
+        self.update_idletasks(); self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}")
 
-        def show_running_apps_selector(self):
-            win = ctk.CTkToplevel(self); win.attributes("-topmost", True); win.title("앱 선택")
-            scroll = ctk.CTkScrollableFrame(win); scroll.pack(fill="both", expand=True)
-            seen = set()
-            for w in gw.getAllWindows():
-                if w.title:
-                    try:
-                        _, pid = win32process.GetWindowThreadProcessId(w._hWnd)
-                        path = psutil.Process(pid).exe()
-                        if path not in seen and "Windows" not in path:
-                            seen.add(path)
-                            ctk.CTkButton(scroll, text=w.title[:20], command=lambda p=path: self.add_captured_app(p, win)).pack(pady=2)
-                    except: continue
+    def refresh_custom_buttons(self):
+        for b in self.custom_buttons: b.destroy()
+        self.custom_buttons.clear(); self.custom_images.clear()
+        for p in self.custom_apps:
+            name = os.path.basename(p).replace(".exe", "")
+            btn = None
+            if IconExtractor and os.path.exists(p):
+                try:
+                    t_ico = os.path.join(tempfile.gettempdir(), f"{name}_icon.ico")
+                    if not os.path.exists(t_ico): IconExtractor(p).export_icon(t_ico)
+                    img = Image.open(t_ico)
+                    icon_img = ctk.CTkImage(light_image=img, dark_image=img, size=(30, 30))
+                    self.custom_images.append(icon_img)
+                    btn = self.add_raw_button("", lambda path=p: os.startfile(path), "#1E272E", 55, 55, image=icon_img)
+                except: pass
+            if not btn: btn = self.add_raw_button(f"🖥️\n{name[:5]}", lambda path=p: os.startfile(path), "#16A085", 55, 55)
+            self.custom_buttons.append(btn)
+        self.toggle_orientation(True)
 
-        def add_captured_app(self, p, win):
-            if p not in self.custom_apps: self.custom_apps.append(p); self.save_config(); self.refresh_custom_buttons()
-            win.destroy()
+    def show_running_apps_selector(self):
+        win = ctk.CTkToplevel(self); win.attributes("-topmost", True); win.title("앱 추가")
+        scroll = ctk.CTkScrollableFrame(win); scroll.pack(fill="both", expand=True)
+        seen = set()
+        for w in gw.getAllWindows():
+            if w.title:
+                try:
+                    _, pid = win32process.GetWindowThreadProcessId(w._hWnd)
+                    path = psutil.Process(pid).exe()
+                    if path not in seen and "Windows" not in path:
+                        seen.add(path)
+                        ctk.CTkButton(scroll, text=w.title[:25], command=lambda p=path: self.add_app(p, win)).pack(pady=2, fill="x")
+                except: continue
 
-        def manage_external_apps(self):
-            win = ctk.CTkToplevel(self); win.geometry("300x400"); win.attributes("-topmost", True); win.title("관리")
-            scroll = ctk.CTkScrollableFrame(win); scroll.pack(fill="both", expand=True)
-            for p in self.custom_apps:
-                f = ctk.CTkFrame(scroll); f.pack(fill="x", pady=2)
-                ctk.CTkLabel(f, text=os.path.basename(p)[:15]).pack(side="left", padx=5)
-                ctk.CTkButton(f, text="X", width=30, command=lambda p=p: self.remove_app(p, win)).pack(side="right")
+    def add_app(self, p, win):
+        if p not in self.custom_apps: self.custom_apps.append(p); self.save_config(); self.refresh_custom_buttons()
+        if win: win.destroy()
 
-        def remove_app(self, p, win):
-            self.custom_apps.remove(p); self.save_config(); self.refresh_custom_buttons(); win.destroy(); self.manage_external_apps()
+    def add_external_app(self):
+        p = filedialog.askopenfilename(filetypes=[("Exe", "*.exe")]); 
+        if p: self.add_app(p, None)
 
-        def show_help_custom(self):
-            help_win = ctk.CTkToplevel(self); help_win.title("도움말"); help_win.geometry("400x300"); help_win.attributes("-topmost", True)
-            textbox = ctk.CTkTextbox(help_win, font=("Consolas", 12))
-            textbox.pack(fill="both", expand=True, padx=10, pady=10)
-            textbox.insert("0.0", "[ Dev Toolbar 가이드 ]\n\n1. 드래그: 핸들 또는 배경 꾹 눌러 이동\n2. 자석: 화면 끝 자동 흡착\n3. 경로: [...] 생략 표기 지원")
-            textbox.configure(state="disabled")
+    def force_set_path(self):
+        p = filedialog.askdirectory(); 
+        if p and os.path.exists(os.path.join(p, BAT_FILENAME)): 
+            self.bat_folder = p; self.save_config(); self.update_folder_label(); self.update_button_states()
 
-        def update_button_states(self):
-            v = bool(self.bat_folder and os.path.exists(os.path.join(self.bat_folder, BAT_FILENAME)))
-            for b in self.action_buttons: b["widget"].configure(state="normal" if v else "disabled")
+    def clear_saved_path(self):
+        self.bat_folder = ""; self.save_config(); self.update_folder_label(); self.update_button_states()
 
-        def minimize_to_tray(self):
-            self.withdraw()
-            img = Image.new('RGB', (64, 64), color='#1E272E')
-            d = ImageDraw.Draw(img); d.rectangle([16, 16, 48, 48], fill='#F1C40F')
-            m = pystray.Menu(item('열기', self.show_app, default=True), item('종료', self.destroy_app))
-            self.icon = pystray.Icon("DevToolbar", img, "Dev Toolbar", m)
-            threading.Thread(target=self.icon.run, daemon=True).start()
+    def update_button_states(self):
+        is_valid = bool(self.bat_folder and os.path.exists(os.path.join(self.bat_folder, BAT_FILENAME)))
+        
+        for b in self.action_buttons:
+            if is_valid:
+                b["widget"].configure(state="normal", fg_color=b["color"], text_color="white")
+            else:
+                b["widget"].configure(state="disabled", fg_color="#34495E", text_color="#7F8C8D")
 
-        def show_app(self, icon=None, item=None):
-            if icon: icon.stop()
-            self.after(100, self.deiconify)
+    def minimize_to_tray(self):
+        self.withdraw()
+        img = Image.new('RGB', (64, 64), color='#1E272E')
+        d = ImageDraw.Draw(img); d.rectangle([16, 16, 48, 48], fill='#F1C40F')
+        self.icon = pystray.Icon("DevToolbar", img, "Dev Toolbar", pystray.Menu(item('열기', lambda i: (i.stop(), self.after(100, self.deiconify)), default=True), item('위치 초기화', self.reset_position), item('종료', self.destroy_app)))
+        threading.Thread(target=self.icon.run, daemon=True).start()
 
-        def destroy_app(self, icon=None, item=None):
-            if icon: icon.stop()
-            self.destroy(); os._exit(0)
+    def reset_position(self, i=None):
+        self.last_x = self.last_y = 100; self.save_config()
+        if i: i.stop()
+        self.after(100, lambda: (self.deiconify(), self.geometry("+100+100")))
 
-        def run_build(self): self.execute_cmd("build")
-        def run_clean(self): self.execute_cmd("clean")
-        def run_clear_logs(self): self.execute_cmd("c_log")
-        def execute_cmd(self, a):
-            if self.bat_folder: subprocess.Popen(["cmd.exe", "/c", BAT_FILENAME, "gui_mode", a], cwd=self.bat_folder, creationflags=subprocess.CREATE_NEW_CONSOLE)
-        def force_set_path(self):
-            p = filedialog.askdirectory()
-            if p: self.bat_folder = p; self.save_config(); self.update_folder_label(); self.update_button_states()
+    def destroy_app(self, i=None):
+        if i: i.stop()
+        self.destroy(); os._exit(0)
 
-    if __name__ == "__main__":
-        app = MiniLauncher()
-        app.mainloop()
+    def run_build(self): self.exec_bat("build")
+    def run_clean(self): self.exec_bat("clean")
+    def run_clear_logs(self): self.exec_bat("c_log")
+    def exec_bat(self, a):
+        if self.bat_folder: subprocess.Popen(["cmd.exe", "/c", BAT_FILENAME, "gui_mode", a], cwd=self.bat_folder, creationflags=subprocess.CREATE_NEW_CONSOLE)
 
-except Exception as fatal_e:
-    show_fatal_error(fatal_e)
+if __name__ == "__main__":
+    app = MiniLauncher(); app.mainloop()
