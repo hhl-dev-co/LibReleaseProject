@@ -106,9 +106,9 @@ class MiniLauncher(ctk.CTk):
         if self.role == "main":
             frame_bg = "#1E272E" # 메인: 아주 어두운 블루그레이 (기존)
         elif self.role == "sub1":
-            frame_bg = "#2C3E50" # Sub1: 살짝 밝아진 블루그레이
+            frame_bg = "#18324D" # Sub1: 살짝 밝아진 블루그레이
         else:
-            frame_bg = "#34495E" # Sub2: 한 톤 더 밝아진 그레이시 블루
+            frame_bg = "#0E4072" # Sub2: 한 톤 더 밝아진 그레이시 블루
         self.main_frame = ctk.CTkFrame(self, fg_color=frame_bg, corner_radius=6)
         self.main_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
