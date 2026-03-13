@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, Menu
 import pystray
 from pystray import MenuItem as item
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import threading
 import tempfile
 import pygetwindow as gw
@@ -84,9 +84,13 @@ class MiniLauncher(ctk.CTk):
         self.custom_images = []
         
         ctrl_size = 40
-        self.btn_setting = self.add_raw_button("📁", self.force_set_path, "#7F8C8D", ctrl_size, ctrl_size, 12)
+        self.btn_setting = self.add_raw_button("📁", self.force_set_path, "#686104", ctrl_size, ctrl_size, 12)
         self.btn_minimize = self.add_raw_button("➖", self.minimize_to_tray, "#5DADE2", ctrl_size, ctrl_size, 12) 
         self.btn_close = self.add_raw_button("❌", self.destroy_app, "#C0392B", ctrl_size, ctrl_size, 12)
+
+        ToolTip(self.btn_setting).text = "경로 설정"
+        ToolTip(self.btn_minimize).text = "트레이로 최소화"
+        ToolTip(self.btn_close).text = "프로그램 종료"
 
         self.setup_bindings() 
         self.update_folder_label()
@@ -131,7 +135,7 @@ class MiniLauncher(ctk.CTk):
             self.folder_label.configure(text=f"[{display_name}]", text_color="#ECF0F1")
             ToolTip(self.folder_label).text = full_name
         else:
-            self.folder_label.configure(text="경로 없음", text_color="#F1C40F")
+            self.folder_label.configure(text="경로 없음", text_color="#F1750F")
             ToolTip(self.folder_label).text = ""
 
     def show_context_menu(self, event):
@@ -221,9 +225,12 @@ class MiniLauncher(ctk.CTk):
 
     def on_bg_release(self, event):
         if hasattr(self, '_drag_timer') and self._drag_timer: self.after_cancel(self._drag_timer)
-        self.attributes("-alpha", 1.0); self.update_idletasks()
-        self.last_x, self.last_y = self.winfo_x(), self.winfo_y()
-        self.save_config(); self._is_draggable = False; self.configure(cursor="arrow")
+        self.attributes("-alpha", 1.0)
+        self.last_x, self.last_y = self.winfo_x(), self.winfo_y()   # 마우스 드래그를 마친 현재 위치를 먼저 저장
+        self.toggle_orientation(keep_state=True)                    # 모니터 간 배율(DPI) 차이로 인해 잘린 UI를 현재 모니터 환경에 맞춰 새로고침하여 꽉 채움
+        self.save_config()
+        self._is_draggable = False
+        self.configure(cursor="arrow")
 
     def click_window(self, event):
         self.offset_x, self.offset_y = event.x_root - self.winfo_x(), event.y_root - self.winfo_y()
@@ -262,6 +269,8 @@ class MiniLauncher(ctk.CTk):
         except: pass
 
     def toggle_orientation(self, keep_state=False):
+        print("keep_state: ", keep_state)
+        print("direction mode: ", self.orientation)
         if not keep_state: self.orientation = "vertical" if self.orientation == "horizontal" else "horizontal"; self.save_config()
         for w in self.main_frame.winfo_children(): w.pack_forget()
         if self.orientation == "horizontal":
@@ -274,7 +283,21 @@ class MiniLauncher(ctk.CTk):
             self.folder_label.pack(side="top", pady=(5, 10))
             for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons: b.pack(side="top", padx=10, pady=3)
             self.btn_close.pack(side="bottom", padx=5, pady=(1, 10)); self.btn_minimize.pack(side="bottom", padx=5); self.btn_setting.pack(side="bottom", padx=5, pady=(15, 1))
-        self.update_idletasks(); self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}")
+        self.update_idletasks()
+        # 2. [핵심] 내부 메인 프레임이 현재 내용물을 다 보여주기 위해 "실제로 필요로 하는" 너비와 높이를 직접 계산
+        req_width = self.main_frame.winfo_reqwidth()
+        req_height = self.main_frame.winfo_reqheight()        
+        # 3. [핵심] CustomTkinter의 현재 모니터 배율(Scale Factor) 가져오기
+        scale = self._get_window_scaling()
+        # 4. 배율이 중복으로 곱해지는 것을 막기 위해, 스케일 값으로 나누어 '논리적 크기'로 변환
+        target_width = int(req_width / scale)
+        target_height = int(req_height / scale)
+        # 5. 계산된 정확한 크기와 위치 지정
+        self.geometry(f"{target_width}x{target_height}+{int(self.last_x)}+{int(self.last_y)}")
+        
+        print("scale: ", scale)
+        print(f"강제 리사이징 완료: {req_width}x{req_height}, 위치: x({self.last_x}), y({self.last_y})")
+        print("")
 
     def refresh_custom_buttons(self):
         for b in self.custom_buttons: b.destroy()
@@ -292,6 +315,7 @@ class MiniLauncher(ctk.CTk):
                     btn = self.add_raw_button("", lambda path=p: os.startfile(path), "#1E272E", 55, 55, image=icon_img)
                 except: pass
             if not btn: btn = self.add_raw_button(f"🖥️\n{name[:5]}", lambda path=p: os.startfile(path), "#16A085", 55, 55)
+            ToolTip(btn).text = name
             self.custom_buttons.append(btn)
         self.toggle_orientation(True)
 
@@ -336,9 +360,30 @@ class MiniLauncher(ctk.CTk):
 
     def minimize_to_tray(self):
         self.withdraw()
-        img = Image.new('RGB', (64, 64), color='#1E272E')
-        d = ImageDraw.Draw(img); d.rectangle([16, 16, 48, 48], fill='#F1C40F')
-        self.icon = pystray.Icon("DevToolbar", img, "Dev Toolbar", pystray.Menu(item('열기', lambda i: (i.stop(), self.after(100, self.deiconify)), default=True), item('위치 초기화', self.reset_position), item('종료', self.destroy_app)))
+        
+        # 1. 사용할 이미지 파일 이름 지정 (파이썬 파일과 같은 경로에 두세요)
+        icon_path = "tray_icon.png" # .ico 파일이라면 "tray_icon.ico"로 변경
+        
+        if os.path.exists(icon_path):
+            # 2. 이미지 파일이 존재하면 해당 이미지를 트레이 아이콘으로 로드
+            img = Image.open(icon_path)
+        else:
+            # 3. 이미지 파일이 없을 경우를 대비한 기본 이모지 렌더링 (안전 장치)
+            icon_size = (64, 64)
+            img = Image.new('RGBA', icon_size, color=(0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("seguiemj.ttf", 50)
+            except IOError:
+                font = ImageFont.load_default()
+            d.text((icon_size[0]/2, icon_size[1]/2), "😚", font=font, fill="white", anchor="mm")
+
+        # 아이콘 실행
+        self.icon = pystray.Icon("DevToolbar", img, "Dev Toolbar", pystray.Menu(
+            item('열기', lambda i: (i.stop(), self.after(100, self.deiconify)), default=True), 
+            item('위치 초기화', self.reset_position), 
+            item('종료', self.destroy_app)
+        ))
         threading.Thread(target=self.icon.run, daemon=True).start()
 
     def reset_position(self, i=None):
