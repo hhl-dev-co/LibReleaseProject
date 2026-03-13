@@ -50,15 +50,50 @@ class ToolTip:
             self.tooltip_window = None
 
 class MiniLauncher(ctk.CTk):
+    def check_instance_role(self):
+        import ctypes
+        ERROR_ALREADY_EXISTS = 183
+        
+        # check_main
+        handle_main = ctypes.windll.kernel32.CreateMutexW(None, False, "DevToolbar_Main")
+        if ctypes.windll.kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+            return "main", handle_main
+        else:
+            ctypes.windll.kernel32.CloseHandle(handle_main) # [추가] 내 깃발이 아니면 손잡이를 놓아줍니다!
+            
+        # check_sub1
+        handle_sub1 = ctypes.windll.kernel32.CreateMutexW(None, False, "DevToolbar_Sub1")
+        if ctypes.windll.kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+            return "sub1", handle_sub1
+        else:
+            ctypes.windll.kernel32.CloseHandle(handle_sub1) # [추가]
+            
+        # check_sub2
+        handle_sub2 = ctypes.windll.kernel32.CreateMutexW(None, False, "DevToolbar_Sub2")
+        if ctypes.windll.kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+            return "sub2", handle_sub2
+        else:
+            ctypes.windll.kernel32.CloseHandle(handle_sub2) # [추가]
+            
+        # already 3 on...
+        return "none", None
+
     def __init__(self):
         super().__init__()
+
+        self.role, self.mutex_handle = self.check_instance_role()
+        if self.role == "none":
+            messagebox.showerror("실행 제한", "최대 3개의 툴바(Main 1개, Sub 2개)만 실행할 수 있습니다.")
+            os._exit(0)
         
+        global CONFIG_FILE
+        CONFIG_FILE = f"launcher_config_{self.role}.json"
+
         self.cached_monitors = get_monitors()
-        
         self.load_config()
         self.validate_position()
         
-        self.title("Dev_Toolbar")
+        self.title(f"Dev_Toolbar - {self.role.upper()}") # 타이틀에 역할 표시
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.wm_attributes("-transparentcolor", "grey")
@@ -68,29 +103,39 @@ class MiniLauncher(ctk.CTk):
         self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}")
 
         self.context_menu = Menu(self, tearoff=0, bg="#2C3E50", fg="white", activebackground="#34495E")
-        self.main_frame = ctk.CTkFrame(self, fg_color="#1E272E", corner_radius=6)
+        if self.role == "main":
+            frame_bg = "#1E272E" # 메인: 아주 어두운 블루그레이 (기존)
+        elif self.role == "sub1":
+            frame_bg = "#2C3E50" # Sub1: 살짝 밝아진 블루그레이
+        else:
+            frame_bg = "#34495E" # Sub2: 한 톤 더 밝아진 그레이시 블루
+        self.main_frame = ctk.CTkFrame(self, fg_color=frame_bg, corner_radius=6)
         self.main_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
-        # 위젯 생성
+        # 위젯 생성 2980B9
+        # 공통 버튼 생성 (드래그, 폴더, 빌드 3종, 닫기)
         self.drag_handle = ctk.CTkLabel(self.main_frame, text=" ⣿ ", text_color="#7F8C8D", cursor="fleur", font=("Arial", 18))
         self.folder_label = ctk.CTkLabel(self.main_frame, text="경로 없음", text_color="#F1C40F", font=("Segoe UI", 12, "bold"), cursor="hand2")
 
         self.btn_auto = self.add_raw_button("🚀\n\nAuto Build", self.run_build, "#2980B9", 75, 55)
         self.btn_clean = self.add_raw_button("🧹\n\nClean Build", self.run_clean, "#8E44AD", 75, 55)
         self.btn_log = self.add_raw_button("🗑\n\nLog", self.run_clear_logs, "#D35400", 75, 55)
-        
         self.action_buttons = [{"widget": self.btn_auto, "color": "#2980B9"}, {"widget": self.btn_clean, "color": "#8E44AD"}, {"widget": self.btn_log, "color": "#D35400"}]
+
+        ctrl_size = 40
         self.custom_buttons = []
         self.custom_images = []
-        
-        ctrl_size = 40
-        self.btn_setting = self.add_raw_button("📁", self.force_set_path, "#686104", ctrl_size, ctrl_size, 12)
-        self.btn_minimize = self.add_raw_button("➖", self.minimize_to_tray, "#5DADE2", ctrl_size, ctrl_size, 12) 
-        self.btn_close = self.add_raw_button("❌", self.destroy_app, "#C0392B", ctrl_size, ctrl_size, 12)
 
-        ToolTip(self.btn_setting).text = "경로 설정"
-        ToolTip(self.btn_minimize).text = "트레이로 최소화"
+        self.btn_close = self.add_raw_button("❌", self.destroy_app, "#C0392B", ctrl_size, ctrl_size, 12)
         ToolTip(self.btn_close).text = "프로그램 종료"
+
+        if self.role == "main":
+            self.btn_setting = self.add_raw_button("📁", self.force_set_path, "#2980B9", ctrl_size, ctrl_size, 12)
+            self.btn_minimize = self.add_raw_button("➖", self.minimize_to_tray, "#5DADE2", ctrl_size, ctrl_size, 12) 
+            ToolTip(self.btn_setting).text = "경로 설정"
+            ToolTip(self.btn_minimize).text = "트레이로 최소화"
+        else:
+            self.custom_apps = [] # Sub 툴바는 외부 앱 버튼을 만들지 않음
 
         self.setup_bindings() 
         self.update_folder_label()
@@ -100,6 +145,19 @@ class MiniLauncher(ctk.CTk):
         self._drag_timer = None
         self._is_draggable = False
         self.after(150, lambda: self.geometry(f"+{int(self.last_x)}+{int(self.last_y)}"))
+        self.after(100, self.force_show_on_taskbar)
+        
+        # toolbar-connection logic
+        if self.role == "main":
+            import sys
+            cmd = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, sys.argv[0]]
+
+            if getattr(self, "launch_sub1", False):
+                subprocess.Popen(cmd, creationflags=0x08000000)
+            if getattr(self, "launch_sub2", False):
+                subprocess.Popen(cmd, creationflags=0x08000000)
+        else:
+            self.check_main_alive()
 
     def add_raw_button(self, text, command, color, width, height, font_size=11, image=None):
         return ctk.CTkButton(self.main_frame, text=text, fg_color=color, corner_radius=8, 
@@ -145,18 +203,27 @@ class MiniLauncher(ctk.CTk):
         menu_state = "normal" if is_valid_path else "disabled"
 
         self.context_menu.add_command(label="📁 폴더 바로 열기", command=lambda: os.startfile(self.bat_folder) if is_valid_path else None, state=menu_state)
-        self.context_menu.add_command(label="➕ 앱 추가", command=self.add_external_app)
-        self.context_menu.add_command(label="🎯 실행 중 앱 추가", command=self.show_running_apps_selector)
-        self.context_menu.add_command(label="⚙️ 앱 편집/삭제", command=self.manage_external_apps)
+        
+        # Sub 툴바를 위한 경로 설정 메뉴 추가 (화면상 버튼 대체)
+        if self.role != "main":
+            self.context_menu.add_command(label="⚙️ 빌드 경로 설정", command=self.force_set_path)
         self.context_menu.add_separator()
         
-        # [기능 추가] 창 순서 제어 메뉴
+        # Main 툴바 전용 메뉴
+        if self.role == "main":
+            self.context_menu.add_command(label="➕ 앱 추가", command=self.add_external_app)
+            self.context_menu.add_command(label="🎯 실행 중 앱 추가", command=self.show_running_apps_selector)
+            self.context_menu.add_command(label="⚙️ 앱 편집/삭제", command=self.manage_external_apps)
+            self.context_menu.add_separator()
+        
         self.context_menu.add_command(label="🔼 맨 앞으로 가져오기", command=self.bring_to_front)
         self.context_menu.add_command(label="🔽 맨 뒤로 보내기", command=self.send_to_back)
         self.context_menu.add_separator()
         
         self.context_menu.add_command(label="🔄 가로/세로 전환", command=lambda: self.toggle_orientation(False))
-        self.context_menu.add_command(label="❓ 도움말", command=self.show_help_from_json)
+        if self.role == "main":
+            self.context_menu.add_command(label="❓ 도움말", command=self.show_help_from_json)
+            
         self.context_menu.add_separator()
         self.context_menu.add_command(label="🧹 설정된 경로 Clear", command=self.clear_saved_path, state=menu_state)
         self.context_menu.add_command(label="❌ 종료", command=self.destroy_app)
@@ -245,7 +312,24 @@ class MiniLauncher(ctk.CTk):
         self._drag_timer = self.after(300, lambda: setattr(self, '_is_draggable', True) or self.configure(cursor="fleur"))
 
     def load_config(self):
-        self.bat_folder = ""; self.custom_apps = []; self.orientation = "vertical"; self.last_x = self.last_y = 100
+        self.bat_folder = ""; self.custom_apps = []; self.orientation = "vertical"
+        self.last_x, self.last_y = 100, 100
+        self.launch_sub1 = False # [추가]
+        self.launch_sub2 = False # [추가]
+        
+        main_x, main_y = 100, 100
+        if os.path.exists("launcher_config_main.json"):
+            try:
+                with open("launcher_config_main.json", "r", encoding="utf-8") as f:
+                    main_data = json.load(f)
+                    main_x = main_data.get("last_x", 100)
+                    main_y = main_data.get("last_y", 100)
+            except: pass
+
+        offset = 40 if self.role == "sub1" else (80 if self.role == "sub2" else 0)
+        self.last_x = main_x + offset
+        self.last_y = main_y + offset
+
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -253,12 +337,38 @@ class MiniLauncher(ctk.CTk):
                     self.bat_folder = data.get("bat_folder", "")
                     self.custom_apps = data.get("custom_apps", [])
                     self.orientation = data.get("orientation", "vertical")
-                    self.last_x, self.last_y = data.get("last_x", 100), data.get("last_y", 100)
+                    
+                    self.launch_sub1 = data.get("launch_sub1", False) # [추가]
+                    self.launch_sub2 = data.get("launch_sub2", False) # [추가]
+                    
+                    saved_x = data.get("last_x")
+                    saved_y = data.get("last_y")
+                    
+                    if saved_x is not None and saved_y is not None:
+                        if self.role != "main" and abs(saved_x - main_x) < 10 and abs(saved_y - main_y) < 10:
+                            pass 
+                        else:
+                            self.last_x = saved_x
+                            self.last_y = saved_y
             except: pass
 
     def save_config(self):
         try:
             data = {"bat_folder": self.bat_folder, "custom_apps": self.custom_apps, "orientation": self.orientation, "last_x": int(self.last_x), "last_y": int(self.last_y)}
+            
+            # [추가] Main 툴바인 경우 현재 켜져있는 Sub 툴바 상태 확인 및 기록
+            if self.role == "main":
+                import ctypes
+                # Sub1 깃발 확인
+                h1 = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, "DevToolbar_Sub1")
+                data["launch_sub1"] = bool(h1)
+                if h1: ctypes.windll.kernel32.CloseHandle(h1) # 메모리 누수 방지
+                
+                # Sub2 깃발 확인
+                h2 = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, "DevToolbar_Sub2")
+                data["launch_sub2"] = bool(h2)
+                if h2: ctypes.windll.kernel32.CloseHandle(h2)
+                
             with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(data, f, indent=4)
         except: pass
 
@@ -277,12 +387,18 @@ class MiniLauncher(ctk.CTk):
             self.drag_handle.pack(side="left", padx=(10, 0))
             self.folder_label.pack(side="left", padx=(5, 10))
             for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons: b.pack(side="left", padx=3, pady=8)
-            self.btn_close.pack(side="right", padx=(1, 5)); self.btn_minimize.pack(side="right", padx=1); self.btn_setting.pack(side="right", padx=(5, 1))
+            self.btn_close.pack(side="right", padx=(1, 5))
+            if self.role == "main": # Main 전용 버튼 패킹
+                self.btn_minimize.pack(side="right", padx=1)
+                self.btn_setting.pack(side="right", padx=(5, 1))
         else:
             self.drag_handle.pack(side="top", pady=(10, 0))
             self.folder_label.pack(side="top", pady=(5, 10))
             for b in [self.btn_auto, self.btn_clean, self.btn_log] + self.custom_buttons: b.pack(side="top", padx=10, pady=3)
-            self.btn_close.pack(side="bottom", padx=5, pady=(1, 10)); self.btn_minimize.pack(side="bottom", padx=5); self.btn_setting.pack(side="bottom", padx=5, pady=(15, 1))
+            self.btn_close.pack(side="bottom", padx=5, pady=(1, 10))
+            if self.role == "main": # Main 전용 버튼 패킹
+                self.btn_minimize.pack(side="bottom", padx=5)
+                self.btn_setting.pack(side="bottom", padx=5, pady=(15, 1))
         self.update_idletasks()
         # 2. [핵심] 내부 메인 프레임이 현재 내용물을 다 보여주기 위해 "실제로 필요로 하는" 너비와 높이를 직접 계산
         req_width = self.main_frame.winfo_reqwidth()
@@ -380,9 +496,17 @@ class MiniLauncher(ctk.CTk):
 
         # 아이콘 실행
         self.icon = pystray.Icon("DevToolbar", img, "Dev Toolbar", pystray.Menu(
-            item('열기', lambda i: (i.stop(), self.after(100, self.deiconify)), default=True), 
+            item('열기', lambda i: (i.stop(), self.after(100, self.deiconify)), default=True),
+            pystray.Menu.SEPARATOR, # 구분선
+            item('🚀 Auto Build', lambda i: self.run_build()),
+            item('🧹 Clean Build', lambda i: self.run_clean()),
+            item('🗑 Log 정리', lambda i: self.run_clear_logs()),
+            pystray.Menu.SEPARATOR,
+            item('➕ 앱 추가', lambda i: self.after(0, self.add_external_app)),
+            item('⚙️ 앱 편집/삭제', lambda i: self.after(0, self.manage_external_apps)),
+            pystray.Menu.SEPARATOR,
             item('위치 초기화', self.reset_position), 
-            item('종료', self.destroy_app)
+            item('❌ 종료', self.destroy_app)
         ))
         threading.Thread(target=self.icon.run, daemon=True).start()
 
@@ -400,6 +524,43 @@ class MiniLauncher(ctk.CTk):
     def run_clear_logs(self): self.exec_bat("c_log")
     def exec_bat(self, a):
         if self.bat_folder: subprocess.Popen(["cmd.exe", "/c", BAT_FILENAME, "gui_mode", a], cwd=self.bat_folder, creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+    def force_show_on_taskbar(self):
+        # 윈도우 OS의 API를 직접 호출하기 위해 ctypes 사용
+        import ctypes
+        try:
+            # 현재 창의 고유 ID(핸들)를 가져옵니다.
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            
+            # 윈도우 창 스타일을 정의하는 상수들
+            GWL_EXSTYLE = -20
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_TOOLWINDOW = 0x00000080
+            
+            # 현재 창의 스타일을 읽어옵니다.
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            # '숨겨진 도구 창' 속성을 지우고, '일반 앱 창(작업표시줄 표시)' 속성을 덮어씌웁니다.
+            style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            
+            # 변경된 스타일을 윈도우가 인식하게 하려면 창을 1초의 찰나 동안 숨겼다 띄워야 합니다.
+            self.wm_withdraw()
+            self.wm_deiconify()
+            self.attributes("-topmost", True) # 다시 맨 앞으로 끌어올림
+        except Exception as e:
+            print("작업표시줄 등록 중 에러 발생:", e)
+    def check_main_alive(self):
+        import ctypes
+        # Main 툴바의 깃발(Mutex)이 존재하는지 확인합니다.
+        handle = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, "DevToolbar_Main")
+        if not handle:
+            # 깃발이 없다면 Main이 종료된 것이므로 나도 스스로 종료합니다.
+            self.destroy_app()
+        else:
+            # 깃발이 있다면 안심하고 핸들을 닫은 뒤, 2초(2000ms) 뒤에 다시 감시합니다.
+            ctypes.windll.kernel32.CloseHandle(handle)
+            self.after(2000, self.check_main_alive)
+    
 
 if __name__ == "__main__":
     app = MiniLauncher(); app.mainloop()

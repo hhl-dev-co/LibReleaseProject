@@ -1,10 +1,9 @@
 {
-    "bat_folder": "C:/Users/LG/Desktop/Dev_Toolbar_Project/2_build_files",
-    "custom_apps": [
-        "C:\\T32\\bin\\windows64\\t32mppc.exe",
-        "C:\\Program Files\\Vector CANalyzer Family 18\\Exec64\\CANw64.exe"
-    ],
+    "bat_folder": "",
+    "custom_apps": [],
     "orientation": "vertical",
-    "last_x": -242,
-    "last_y": 412
+    "last_x": 402,
+    "last_y": 375,
+    "launch_sub1": false,
+    "launch_sub2": false
 }
