@@ -1,7 +1,10 @@
 {
-    "bat_folder": "",
-    "custom_apps": [],
+    "bat_folder": "C:/Users/LG/Desktop/Dev_Toolbar_Project/2_build_files",
+    "custom_apps": [
+        "C:\\Program Files\\Notepad++\\notepad++.exe",
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    ],
     "orientation": "vertical",
-    "last_x": -344,
-    "last_y": 483
+    "last_x": 358,
+    "last_y": 271
 }
